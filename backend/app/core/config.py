@@ -9,7 +9,7 @@ from typing import Optional
 from dataclasses import dataclass, field
 
 
-CONFIG_PATH = Path("data/config.json")
+CONFIG_PATH = Path("C:/Users/大反派/AppData/Roaming/TRAE SOLO CN/ModularData/ai-agent/work-mode-projects/6a4b27824bf5329b06acb20a/config.json")
 
 
 @dataclass

@@ -5,6 +5,7 @@ AI Panel Studio — FastAPI 入口。
 import logging
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
@@ -60,6 +61,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.mount('/demo', StaticFiles(directory='../demo', html=True), name='demo')
 app.include_router(router)
 
 

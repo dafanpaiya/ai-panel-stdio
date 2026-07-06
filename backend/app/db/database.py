@@ -16,7 +16,7 @@ from app.core.models import (
     new_id, now_iso,
 )
 
-DB_PATH = Path("data/ai_panel_studio.db")
+DB_PATH = Path("C:/Users/大反派/AppData/Roaming/TRAE SOLO CN/ModularData/ai-agent/work-mode-projects/6a4b27824bf5329b06acb20a/ai_panel_studio.db")
 
 
 def get_db_path() -> Path:
