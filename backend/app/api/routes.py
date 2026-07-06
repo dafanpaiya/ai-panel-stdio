@@ -11,6 +11,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.core.manager import DiscussionManager
+from app.core.config import load_config, save_config, update_provider_key, set_active_provider, get_active_api_key, LLMProviderConfig
+from app.core.models import now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +24,7 @@ router = APIRouter(prefix="/api")
 class CreateDiscussionRequest(BaseModel):
     topic: str = Field(..., min_length=2, max_length=200)
     expert_count: int = Field(default=4, ge=1, le=8)
-    max_rounds: int = Field(default=12, ge=4, le=30)
+    max_rounds: int = Field(default=20, ge=10, le=40)
 
 
 class GeneratePanelRequest(BaseModel):
@@ -47,6 +49,17 @@ class AddExpertRequest(BaseModel):
 
 class InterjectRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=500)
+
+
+class APIKeyRequest(BaseModel):
+    provider: str = Field(default="deepseek")
+    api_key: str = Field(..., min_length=1)
+    base_url: Optional[str] = None
+    model: Optional[str] = None
+
+
+class SetActiveProviderRequest(BaseModel):
+    provider: str = Field(..., min_length=1)
 
 
 # ── 依赖注入 ────────────────────────────────────────
@@ -296,3 +309,79 @@ async def get_transcript(
 async def get_insights(discussion_id: str):
     mgr = get_manager()
     return await mgr.get_insights(discussion_id)
+
+
+# ── API Key 管理 ─────────────────────────────────────
+
+@router.get("/settings/llm")
+async def get_llm_settings():
+    """获取所有 LLM provider 配置（api_key 脱敏）"""
+    cfg = load_config()
+    providers = []
+    for p in cfg.providers:
+        key = p.api_key
+        masked = key[:4] + "****" + key[-4:] if len(key) > 8 else ("****" if key else "")
+        providers.append({
+            "provider": p.provider,
+            "label": p.label,
+            "api_key_masked": masked,
+            "has_key": bool(p.api_key),
+            "base_url": p.base_url,
+            "model": p.model,
+        })
+    return {
+        "providers": providers,
+        "active_provider": cfg.active_provider,
+    }
+
+
+@router.put("/settings/llm/key")
+async def update_api_key(body: APIKeyRequest):
+    """更新指定 provider 的 API Key"""
+    p = update_provider_key(
+        provider=body.provider,
+        api_key=body.api_key,
+        base_url=body.base_url,
+        model=body.model,
+    )
+
+    # 重新加载 LLM 客户端
+    mgr = get_manager()
+    mgr.reload_llm()
+
+    return {
+        "provider": p.provider,
+        "label": p.label,
+        "has_key": True,
+        "api_key_masked": p.api_key[:4] + "****" + p.api_key[-4:] if len(p.api_key) > 8 else "****",
+        "base_url": p.base_url,
+        "model": p.model,
+    }
+
+
+@router.post("/settings/llm/active")
+async def set_active_llm(body: SetActiveProviderRequest):
+    """切换当前使用的 LLM provider"""
+    cfg = set_active_provider(body.provider)
+
+    # 重新加载 LLM 客户端
+    mgr = get_manager()
+    mgr.reload_llm()
+
+    return {
+        "active_provider": cfg.active_provider,
+        "message": f"已切换到 {cfg.active_provider}",
+    }
+
+
+@router.get("/settings/llm/check")
+async def check_api_key(provider: Optional[str] = None):
+    """检查 API Key 是否已配置"""
+    cfg = load_config()
+    target = provider or cfg.active_provider
+    p = cfg.find(target)
+    return {
+        "provider": target,
+        "configured": p is not None and bool(p.api_key),
+        "active": cfg.active_provider == target,
+    }

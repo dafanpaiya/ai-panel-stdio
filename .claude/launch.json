@@ -2,9 +2,9 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "mockups",
+      "name": "demo",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8080", "--directory", "mockups"],
+      "runtimeArgs": ["-m", "http.server", "8080", "--directory", "demo"],
       "port": 8080
     }
   ]

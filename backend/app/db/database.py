@@ -30,7 +30,7 @@ def init_db(db_path: Optional[Path] = None):
 
     with sqlite3.connect(str(path)) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA journal_mode = DELETE")
         conn.executescript(SCHEMA_SQL)
 
 

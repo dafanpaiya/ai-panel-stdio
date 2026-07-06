@@ -98,7 +98,7 @@ class FrequencyController:
     """
 
     MAX_CONSECUTIVE = 2
-    MODERATOR_INTERVAL = 3  # 每 3 轮触发一次
+    MODERATOR_INTERVAL = 10  # 至少10轮后才触发主持人介入
 
     @staticmethod
     def build_candidate_order(

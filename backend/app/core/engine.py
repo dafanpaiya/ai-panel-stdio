@@ -368,12 +368,12 @@ class DiscussionEngine:
         for c in result.consensus_updates:
             self._consensus_list.append(c)
             await self._queue.put(_insight_update_event("consensus", "new", c))
-            await self.db.save_consensus(c)
+            self.db.save_consensus(c)
 
         for d in result.divergence_updates:
             self._divergence_list.append(d)
             await self._queue.put(_insight_update_event("divergence", "new", d))
-            await self.db.save_divergence(d)
+            self.db.save_divergence(d)
 
     # ── 工具方法 ──────────────────────────────────────
 
@@ -398,6 +398,8 @@ class DiscussionEngine:
             created_at=now_iso(),
         )
         self._transcript.append(u)
+        # 持久化到数据库
+        self.db.save_utterance(u)
         return u
 
     async def _broadcast_moderating(self, trigger: ModeratorTrigger, message: str):

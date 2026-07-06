@@ -9,9 +9,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from app.api.routes import router, set_manager
-from app.core.manager import DiscussionManager, create_llm_client
+from app.core.manager import DiscussionManager
+from app.llm.factory import create_llm_client_from_config
 from app.db.database import Database, init_db
 from app.core.models import now_iso
+from app.core.config import load_config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,6 +25,9 @@ async def lifespan(app: FastAPI):
     # 启动时
     logger.info("初始化数据库…")
     init_db()
+
+    # 初始化默认配置
+    load_config()
 
     logger.info("初始化 DiscussionManager…")
     db = Database()
@@ -49,7 +54,7 @@ app = FastAPI(
 # CORS — 本地开发
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

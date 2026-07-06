@@ -15,7 +15,8 @@ from app.core.models import (
     new_id, now_iso,
 )
 from app.core.engine import DiscussionEngine
-from app.llm.client import LLMClient, create_llm_client
+from app.llm.client import LLMClient
+from app.llm.factory import create_llm_client_from_config, reload_llm_client
 from app.db.database import Database
 
 logger = logging.getLogger(__name__)
@@ -26,10 +27,14 @@ class DiscussionManager:
 
     def __init__(self, db: Database):
         self.db = db
-        self.llm: LLMClient = create_llm_client()
+        self.llm: LLMClient = create_llm_client_from_config()
         self._engines: dict[str, DiscussionEngine] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._summaries: dict[str, str] = {}
+
+    def reload_llm(self):
+        """API Key 更新后重新加载 LLM 客户端"""
+        self.llm = reload_llm_client()
 
     # ── 创建讨论 ──────────────────────────────────────
 
@@ -90,6 +95,10 @@ class DiscussionManager:
             self.db.create_panelist(p)
             panelists.append(p)
 
+        # 更新讨论状态
+        discussion.status = DiscussionStatus.LINEUP_READY
+        self.db.update_discussion(discussion)
+
         return panelists
 
     async def _llm_generate_panel(self, llm: LLMClient, topic: str, count: int) -> list[dict]:
@@ -99,13 +108,65 @@ class DiscussionManager:
         if isinstance(llm, MockLLMClient):
             return self._mock_panel_data(count)
 
+        # 真实 LLM 调用
+        from app.llm.client import DeepSeekClient
         system_prompt = (
-            f"为话题「{topic}」生成圆桌讨论阵容。返回 JSON 数组。\n"
-            f"第一位是主持人（role: moderator），后续 {count} 位是专家（role: expert）。\n"
-            f"每位包含：name, occupation, title, stance, color（hex 颜色）。\n"
-            f"专家应覆盖不同立场，形成辩论张力。"
+            "你是一个圆桌讨论嘉宾生成器。根据给定话题，生成1位主持人和指定数量的专家。\n"
+            "要求：\n"
+            "1. 嘉宾姓名必须是中文姓名（2-3字）\n"
+            "2. 职业和头衔必须与话题相关\n"
+            "3. 每位专家有明确、相互不同的立场，形成辩论张力\n"
+            "4. 颜色使用hex格式，每人颜色不同\n"
+            "5. stance字段用中文自然描述立场\n"
+            "返回纯JSON数组（不要markdown代码块），第一位role为moderator，后续为expert。"
         )
-        # 简化：使用 mock 返回
+
+        # 尝试真实 LLM
+        if isinstance(llm, DeepSeekClient):
+            try:
+                import httpx, json, os
+                token = llm.api_key
+                user_prompt = f"话题：「{topic}」\n专家人数：{count}\n请生成嘉宾阵容。"
+                r = httpx.post(
+                    f"{llm.base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    json={"model": llm.model, "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ], "temperature": 0.9, "max_tokens": 2000},
+                    timeout=30)
+                content = r.json()["choices"][0]["message"]["content"]
+                # 清理 markdown 代码块
+                content = content.strip()
+                if content.startswith("```"):
+                    lines = content.split("\n")
+                    # 移除首行```和末行```
+                    if lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if lines and lines[-1].strip() == "```":
+                        lines = lines[:-1]
+                    content = "\n".join(lines)
+                data = json.loads(content)
+                # 验证并补齐字段
+                if isinstance(data, list) and len(data) >= 1:
+                    # 确保每条都有必要字段
+                    result = []
+                    colors = ["#E57373", "#81C784", "#FFB74D", "#BA68C8", "#4FC3F7", "#FF8A65", "#AED581", "#7986CB"]
+                    for i, item in enumerate(data):
+                        normalized = {
+                            "role": item.get("role", "expert" if i > 0 else "moderator"),
+                            "name": item.get("name", f"专家{i}"),
+                            "occupation": item.get("occupation", "研究员"),
+                            "title": item.get("title", "某机构"),
+                            "stance": item.get("stance", "中立"),
+                            "color": item.get("color", colors[i % len(colors)]),
+                        }
+                        result.append(normalized)
+                    return result
+            except Exception:
+                pass
+
+        # Fallback to mock
         return self._mock_panel_data(count)
 
     def _mock_panel_data(self, count: int) -> list[dict]:

@@ -261,10 +261,13 @@ class DeepSeekClient(LLMClient):
         import re
         raw = await self._chat(system_prompt, user_prompt, temperature)
 
-        # 尝试提取 JSON 块
-        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+        # 尝试提取 JSON 块（支持数组和对象）
+        json_match = re.search(r'(\[.*\]|\{.*\})', raw, re.DOTALL)
         if json_match:
-            return json.loads(json_match.group(0))
+            parsed = json.loads(json_match.group(0))
+            if isinstance(parsed, str):
+                raise ValueError(f"LLM returned string instead of dict: {parsed[:200]}")
+            return parsed
         raise ValueError(f"LLM 返回无法解析为 JSON: {raw[:200]}")
 
     # ── 调度 ──────────────────────────────────────────
@@ -295,14 +298,14 @@ class DeepSeekClient(LLMClient):
         ]
 
         system_prompt = (
-            "你是一个圆桌讨论的调度员。根据当前讨论进展和专家发言统计，"
-            "决定下一位发言专家及发言类型。\n\n"
-            "约束规则：\n"
-            "1. 同一专家连续发言不超过 2 次\n"
-            "2. 优先选择最近未发言的专家\n"
-            "3. 禁止机械式轮流发言\n"
-            "4. 发言类型：main（新观点）、supplement（补充）、rebuttal（反驳）\n"
-            "5. rebuttal/supplement 必须指定 target_panelist_id\n\n"
+            "你是圆桌讨论调度员。根据当前讨论动态决定下一位发言者。\n\n"
+            "关键规则（按优先级执行）：\n"
+            "1. 优先反驳(rebuttal)：如果最近发言中某人被质疑/反对，或某专家之前被反驳应回击，选TA反驳\n"
+            "2. 其次补充(supplement)：如果某专家的观点可以被另一位延伸深化，选TA补充\n"
+            "3. 最后才新观点(main)：仅在无人需要反驳或补充时\n"
+            "4. 同一专家连续发言不超过 2 次\n"
+            "5. 禁止机械轮流发言 — 绝对不要按顺序选人\n"
+            "6. rebuttal/supplement 必须指定 target_panelist_id\n\n"
             '返回 JSON: {"selected_panelist_id": "...", "type": "main|supplement|rebuttal", '
             '"target_panelist_id": "..." | null, "reason": "选择理由"}'
         )
@@ -335,13 +338,21 @@ class DeepSeekClient(LLMClient):
             f"[R{u.round}] {u.type}: {u.content}" for u in recent
         )
 
+        type_hint = ""
+        if speech_type == "rebuttal":
+            type_hint = "你正在反驳另一位专家的观点。请直接、有力地表达你的不同看法。"
+        elif speech_type == "supplement":
+            type_hint = "你在补充另一位专家的观点。请延伸、深化TA的分析。"
+        elif speech_type == "main":
+            type_hint = "请提出一个与众不同的新角度。"
+
         system_prompt = (
             f"你是 {panelist.name}，{panelist.occupation}，{panelist.title}。\n"
             f"你的立场：{panelist.stance}\n\n"
             f"你正在参加一场关于「{topic}」的圆桌讨论。\n"
             f"本轮你的发言类型是：{speech_type}。\n"
-            f"请用自然语言发表 1-2 句话，表达你的观点。\n"
-            f"要求：简洁有力，口语化，像真实讨论中的发言。"
+            f"{type_hint}\n"
+            f"请用自然口语发表 1-2 句话。简洁有力，像真实讨论中的即兴发言，不要演讲稿风格。"
         )
 
         user_prompt = f"最近讨论记录：\n{recent_lines}\n\n请发表你的观点："
@@ -404,20 +415,27 @@ class DeepSeekClient(LLMClient):
     async def extract_insights(
         self, utterance, topic, transcript, existing_consensus, existing_divergence,
     ) -> InsightResult:
-        existing_cons_lines = "\n".join(f"- {c.content}" for c in existing_consensus)
-        existing_div_lines = "\n".join(f"- {d.content}" for d in existing_divergence)
+        """
+        从最新发言中提取新共识/分歧。
+        Delegate to DeepSeek for real extraction.
+        """
+        existing_cons_lines = "\n".join(f"- {c.content}" for c in existing_consensus) or "(暂无)"
+        existing_div_lines = "\n".join(f"- {d.content}" for d in existing_divergence) or "(暂无)"
 
         system_prompt = (
-            "你是一个讨论分析助手。根据最新一条发言，判断是否引入了新的共识或分歧。\n"
+            "你是一个圆桌讨论分析助手。根据最新一条发言，判断是否引入了新的共识或分歧。\n"
+            "若新发言与前几条发言有观点趋同，记为共识；若有对立立场，记为分歧。\n"
+            "不重复已有的共识/分歧点。没有新发现则返回空数组。\n"
             "已有共识：\n" + existing_cons_lines + "\n\n"
             "已有分歧：\n" + existing_div_lines + "\n\n"
-            "如果新发言不引入新共识/分歧，返回空数组。\n"
-            '返回 JSON: {"new_consensus": [], "new_divergences": []}'
+            '返回JSON: {"new_consensus": [{"content": "共识内容"}], "new_divergences": [{"content": "分歧内容", "opposing_sides": [{"side": "甲方立场", "panelist_ids": []}, {"side": "乙方立场", "panelist_ids": []}]}]}'
         )
-        user_prompt = f"最新发言：{utterance.content}"
+        context = transcript[-6:] if len(transcript) > 6 else transcript
+        recent = "\n".join(f"[{u.round}] {u.content[:120]}" for u in context)
+        user_prompt = f"最新发言：[{utterance.round}] {utterance.content}\n\n最近上下文：\n{recent}"
 
         try:
-            result = await self._chat_json(system_prompt, user_prompt)
+            result = await self._chat_json(system_prompt, user_prompt, temperature=0.3)
             insight_result = InsightResult()
 
             for c_data in result.get("new_consensus", []):
